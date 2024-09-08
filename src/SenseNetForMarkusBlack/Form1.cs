@@ -1,23 +1,31 @@
 using SenseNet.Client;
-using System.Net.Http;
 using System.Text;
-using AngleSharp.Dom;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
-using Org.BouncyCastle.Asn1.Icao;
-using SenseNet.Testing;
+// ReSharper disable LocalizableElement
 
 namespace SenseNetForMarkusBlack
 {
     public partial class Form1 : Form
     {
-        private readonly IRepositoryCollection _repositoryCollection;
+        private readonly IDataHandler _dataHandler;
+        private readonly string _url;
 
-        public Form1(IRepositoryCollection repositoryCollection)
+        public Form1(IDataHandler dataHandler, IOptions<RepositoryOptions> repositoryOptions)
         {
             InitializeComponent();
 
-            _repositoryCollection = repositoryCollection;
+            _dataHandler = dataHandler;
+            _url = repositoryOptions.Value.Url;
 
+            InitializeApp();
+        }
+
+        private void InitializeApp()
+        {
+            this.Text = "BROWSE " + _url;
+            connectionStatusStatusbarLabel.Text = $"Connecting...";
+            connectionTimer.Enabled = true;
             InitializeTree();
         }
 
@@ -28,7 +36,7 @@ namespace SenseNetForMarkusBlack
 
         private async Task InitializeRoot()
         {
-            var node = await LoadContentAsync("/Root", CancellationToken.None);
+            var node = await _dataHandler.LoadContentAsync("/Root", CancellationToken.None);
             var root = new TreeNode
             {
                 Text = "Root",
@@ -37,36 +45,12 @@ namespace SenseNetForMarkusBlack
             treeView1.Nodes.Add(root);
         }
 
-
-        private async void button1_Click(object sender, EventArgs e)
-        {
-            goButton.Enabled = false;
-            var contents = await Test(CancellationToken.None);
-            //debugTextBox.Text = string.Join("\r\n", contents.Select(c => c.Path));
-            goButton.Enabled = true;
-        }
-
-        private async Task<IEnumerable<Content>> Test(CancellationToken cancel)
-        {
-            var repository = await _repositoryCollection.GetRepositoryAsync(cancel);
-
-            var contents = await repository.LoadCollectionAsync(new()
-            {
-                Path = locationTextBox.Text,
-                Expand = new[] { "Actions" },
-                Select = new[] { "Id", "Type", "Path", "Name", "Actions" },
-                Parameters = { new KeyValuePair<string, string>("scenario", "ContextMenu") }
-            }, cancel);
-
-            return contents;
-        }
-
         private async void treeView1_NodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
         {
             // select node
             var node = e.Node;
             locationTextBox.Text = node.FullPath;
-            var children = await LoadChildren(node, CancellationToken.None);
+            var children = await _dataHandler.LoadChildren((Content)node.Tag, CancellationToken.None);
 
             // Update subtree
             node.Nodes.Clear();
@@ -74,7 +58,7 @@ namespace SenseNetForMarkusBlack
             {
                 var childNode = new TreeNode
                 {
-                    Text = content.Name,
+                    Text = content.Name ?? "???",
                     Tag = content
                 };
                 node.Nodes.Add(childNode);
@@ -135,51 +119,14 @@ namespace SenseNetForMarkusBlack
                 detailsTextBox.Clear();
         }
 
-        private async Task<Content> LoadContentAsync(string path, CancellationToken cancel)
-        {
-            var repository = await _repositoryCollection.GetRepositoryAsync(cancel);
-
-            var content = await repository.LoadContentAsync(new LoadContentRequest
-            {
-                Path = path,
-                Expand = new[] { "Actions" },
-                Select = new[] { "Id", "Type", "Path", "Name", "Actions" },
-                Parameters = { new KeyValuePair<string, string>("scenario", "ContextMenu") }
-            }, cancel);
-
-            return content;
-        }
-
-        private async Task<IContentCollection<Content>> LoadChildren(TreeNode node, CancellationToken cancel)
-        {
-            var content = (Content)node.Tag;
-            if (content == null)
-                throw new ArgumentException("TreeNode has no Content");
-            if (content.Path == null)
-                throw new ArgumentException("TreeNode's Content has no Path");
-
-            var repository = await _repositoryCollection.GetRepositoryAsync(cancel);
-
-            var contents = await repository.LoadCollectionAsync(new()
-            {
-                Path = content.Path,
-                Expand = new[] { "Actions" },
-                Select = new[] { "Id", "Type", "Path", "Name", "Actions" },
-                OrderBy = new[] { "Name" },
-                Parameters = { new KeyValuePair<string, string>("scenario", "ContextMenu") }
-            }, cancel);
-
-            return contents;
-        }
-
-        private void dataGridView1_SelectionChanged(object sender, EventArgs e)
+        private void dataGridView1_SelectionChanged(object? sender, EventArgs e)
         {
             var selection = dataGridView1.SelectedRows;
             detailsTextBox.Clear();
             if (selection.Count == 1)
             {
-                var content = (Content)selection[0].Tag;
-                if(content != null)
+                var content = (Content?)selection[0].Tag;
+                if (content != null)
                 {
                     var text = new StringBuilder();
                     foreach (var fieldName in content.FieldNames.Except(new[] { "Actions" }))
@@ -223,10 +170,50 @@ namespace SenseNetForMarkusBlack
             if (!content.FieldNames.Contains("Actions"))
                 return Array.Empty<ContentAction>();
             var actionsJson = content["Actions"].ToString();
-            if(string.IsNullOrEmpty(actionsJson))
+            if (string.IsNullOrEmpty(actionsJson))
                 return Array.Empty<ContentAction>();
             var actions = JsonConvert.DeserializeObject<ContentAction[]>(actionsJson);
             return actions ?? Array.Empty<ContentAction>();
+        }
+
+        private void treeView1_NodeMouseDoubleClick(object sender, TreeNodeMouseClickEventArgs e)
+        {
+            //var selectedContent = e.Node.Tag as Content;
+            //if (selectedContent == null)
+            //    return;
+
+            //var editForm = new EditForm(selectedContent);
+            //editForm.ShowDialog();
+        }
+
+        private void dataGridView1_CellMouseDoubleClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            OpenContentForEditing(dataGridView1.Rows[e.RowIndex].Tag as Content);
+        }
+
+        private void OpenContentForEditing(Content? selectedContent)
+        {
+            if (selectedContent == null)
+                return;
+
+            var editForm = new EditForm(selectedContent);
+            editForm.Show();
+        }
+
+        private async void connectionTimer_Tick(object sender, EventArgs e)
+        {
+            var status = await _dataHandler.CheckConnectionAsync(1000);
+            switch (status)
+            {
+                case ConnectionStatus.Connecting:
+                    connectionStatusStatusbarLabel.Text = "Connecting...";
+                    break;
+                case ConnectionStatus.Connected:
+                    connectionStatusStatusbarLabel.Text = "Connected";
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
         }
     }
 }

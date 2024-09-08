@@ -1,6 +1,8 @@
+using System.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using SenseNet.Client;
 using SenseNet.Extensions.DependencyInjection;
 
 namespace SenseNetForMarkusBlack;
@@ -27,8 +29,11 @@ internal class Program
             .ConfigureAppConfiguration(configBuilder =>
             {
                 configBuilder.AddUserSecrets<Program>();
+//configBuilder.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
             })
             .ConfigureServices((context, services) => {
+                services.AddOptions();
+                services.Configure<RepositoryOptions>(context.Configuration.GetSection("sensenet:repository"));
                 services.AddSenseNetClient()
                     .ConfigureSenseNetRepository(repositoryOptions =>
                     {
@@ -36,6 +41,7 @@ internal class Program
                     });
 
                 services.AddTransient<Form1>();
+                services.AddSingleton<IDataHandler, RepositoryDataHandler>();
             });
     }
 }
